@@ -22,6 +22,7 @@ jobs:
         with:
           repository: zaidanm16/kang-frontend
           path: frontend
+          ssh-key: ${{ secrets.FRONTEND_DEPLOY_KEY }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
