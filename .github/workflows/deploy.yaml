@@ -3,7 +3,6 @@ name: Deploy demo
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/deploy.yaml']
   workflow_dispatch:
 
 permissions:
