@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Rebuild whenever kang-frontend main moves, so new features reach the
+    # demo without a manual rebuild commit.
+    - cron: '*/30 * * * *'
 
 permissions:
   contents: read
@@ -13,7 +17,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      frontend_sha: ${{ steps.decide.outputs.frontend_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: decide
+        env:
+          FRONTEND_DEPLOY_KEY: ${{ secrets.FRONTEND_DEPLOY_KEY }}
+        run: |
+          echo "$FRONTEND_DEPLOY_KEY" > frontend_deploy_key
+          chmod 600 frontend_deploy_key
+          frontend_sha=$(GIT_SSH_COMMAND="ssh -i frontend_deploy_key -o StrictHostKeyChecking=accept-new" \
+            git ls-remote git@github.com:zaidanm16/kang-frontend.git main | awk '{print $1}')
+          built_sha=$(cat .demo-version 2>/dev/null || echo "")
+          echo "frontend main: $frontend_sha; built at: $built_sha"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$frontend_sha" != "$built_sha" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "frontend_sha=$frontend_sha" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,11 +71,13 @@ jobs:
           path: frontend/out
 
   deploy:
-    needs: build
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
+      contents: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -53,3 +85,17 @@ jobs:
       - name: Deploy demo
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Record the built frontend revision
+        env:
+          FRONTEND_SHA: ${{ needs.check.outputs.frontend_sha }}
+        run: |
+          echo "$FRONTEND_SHA" > .demo-version
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet .demo-version; then
+            echo "demo version already recorded"
+            exit 0
+          fi
+          git add .demo-version
+          git commit -m "chore: sync demo to kang-frontend main ${FRONTEND_SHA:0:7}"
+          git push origin main
